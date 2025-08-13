@@ -9,6 +9,8 @@ function qpath = rayCastPlanner(A, q_init, q_goal, B, bounds, options)
         q_init (3,1) double
         q_goal (3,1) double
         B cell
+
+        % Assume the bounds are the absolute minimum bounding box of any robot orientation and robot frame at robot center
         bounds (2,:) double = [0; 0]
         
         options.rngSeed (1,1) double = 1
@@ -16,10 +18,13 @@ function qpath = rayCastPlanner(A, q_init, q_goal, B, bounds, options)
         options.initialRays (1,1) double = 5
         options.maxBounces (1,1) double {mustBeInteger,mustBeNonnegative} = 30
         options.maxIter (1,1) double = 5000
+        options.minIter (1,2) double = 20
         
         options.goalRegionNRays (1,1) double = 360
         options.goalRegionMargin (1,1) double = 1e-3
-        options.goalThetaTol (1,1) double = deg2rad(10)
+
+        options.robotIsFreeFlying (1,1) logical = true
+        options.inflateCSpace (1,1) logical = true
 
         options.includeGoalReflection logical = true
         options.includeSpecularReflection logical = true
@@ -27,45 +32,66 @@ function qpath = rayCastPlanner(A, q_init, q_goal, B, bounds, options)
         options.includeRandomReflection logical = true
         options.numberOfDiffuse (1,1) double {mustBeInteger,mustBePositive} = 5
 
-        options.turnCheckSteps (1,1) double {mustBeInteger,mustBePositive} = 12
         options.maxTurnPerStep (1,1) double = .1
         options.maxDistPerStep (1,1) double = .1
-        options.scoreChildren logical = false        
-        
-        options.goalAngleSteps (1,1) double = 36
-        options.goalLineSteps (1,1) double = 50
+        options.scoreChildren logical = false
         
         options.debug logical = false
         options.debugCObs logical = true
         options.debugStep logical = true
         options.debugPause (1,1) double = 0
         options.OnlyCurrentHitRay logical = false
-
+        
         options.margin (1,1) double = 1e-3
     end
-
+    
     % --- Input checks ---
     checkQ(q_init);
     checkQ(q_goal);
     checkVertices(A);
     checkVertices(bounds);
-
+    
     if ~inpolygon(q_init(1), q_init(2), bounds(1,:), bounds(2,:)) || ...
-       ~inpolygon(q_goal(1), q_goal(2), bounds(1,:), bounds(2,:))
+        ~inpolygon(q_goal(1), q_goal(2), bounds(1,:), bounds(2,:))
         error('All points must be inside the boundary');
     end
-
+    
     for i = 1:numel(B)
         checkVertices(B{i});
         if ~all(inpolygon(B{i}(1,:), B{i}(2,:), bounds(1,:), bounds(2,:)))
             error('All obstacle vertices must be inside the boundary');
         end
     end
-
+    
+    rng(options.rngSeed);
     childrenPerBounce = sum([options.includeGoalReflection, options.includeSpecularReflection, options.includeDiffuseReflection, options.includeRandomReflection, options.numberOfDiffuse]);
 
-    % Compute a conservative robot radius
-    R_robot = max(sqrt(sum(A.^2,1)));
+    % Compute the radius of the robot as the length from the centroid to the farthest vertex
+    [cx, cy] = centroid(polyshape(A.', 'Simplify', false));
+    R_robot = max(sqrt((A(1,:) - cx).^2 + (A(2,:) - cy).^2))
+    
+    % If the robot is free-flying, only calculate the C-obstacles for the initial configuration
+    if options.robotIsFreeFlying
+        thetas = q_init(3);
+    else
+        thetas = 0:.1:2*pi;
+    end
+    inflated_cObs = {};
+    if options.inflateCSpace
+        for i = 1:numel(B)
+            all_obs_cspace_verts = [];
+            for theta=thetas
+                all_obs_cspace_verts = [all_obs_cspace_verts, cObstacle(theta, A, B)]
+            end
+            k = convhull(all_obs_cspace_verts.');
+            
+            k(end) = [];
+            all_obs_cspace_verts = all_obs_cspace_verts(:,k);
+            % Inflate the C-obstacles by a very small margin
+
+            inflated_cObs{i} = all_obs_cspace_verts;
+        end
+    end
 
     % If bounds not provided, compute from environment with generous margin for robot size
     if isequal(bounds, [0;0])
@@ -86,9 +112,7 @@ function qpath = rayCastPlanner(A, q_init, q_goal, B, bounds, options)
     % Precompute boundary edges for convex checks
     boundsE = edgesFromVertices(bounds);
 
-    rng(options.rngSeed);
-
-    R_robot = max(sqrt(sum(A.^2,1)));
+    % R_robot = max(sqrt(sum(A.^2,1)));
 
     % Debug bounds shape only
     boundsPS = polyshape(bounds.', 'Simplify', false);
@@ -145,6 +169,7 @@ function qpath = rayCastPlanner(A, q_init, q_goal, B, bounds, options)
     ths = wrapToPi(th0 + (2*pi)*rand(1,options.initialRays));
     dirs = [ths, th0, th_goal];
 
+    % Preallocate a stack and track the index of the top element to save time with allocations...probably isn't saving much
     maxStack = max(1000, options.maxIter + options.maxBounces*childrenPerBounce*10);
     stack = repmat(StackItem([0;0],0,0,zeros(3,1),RayType.initial,HitType.none,0), 1, maxStack);
     stackTop = 1;
@@ -162,22 +187,38 @@ function qpath = rayCastPlanner(A, q_init, q_goal, B, bounds, options)
 
     % Best-so-far + visited states
     bestLen = inf;
-    stateXYRes = 0.02;
-    stateThRes = deg2rad(3);
-    visited = containers.Map('KeyType','char','ValueType','logical');
 
-    makeKey = @(p,th,b) sprintf('%d_%d_%d_%d', ...
-                    round(p(1)/stateXYRes), round(p(2)/stateXYRes), ...
-                    round(wrapToPi(th)/stateThRes), b);
+    % Don't recompute for angle/xy pairs that are really close to something already tried.
+    % Should stop casting from getting stuck in corner reflectionish cycles
+    positionResolution = 0.02;
+    angleResolution = deg2rad(1);
+    % visited = containers.Map('KeyType','char','ValueType','logical');
+    visited = dictionary();
+
+    makeKey = @(p,th,initP) keyHash([round(p(1)/positionResolution),...
+                                     round(p(2)/positionResolution),...
+                                     round(wrapToPi(th)/angleResolution),...
+                                     round(initP(1)/positionResolution),...
+                                     round(initP(2)/positionResolution)]);
 
     for i = 1:stackTop
-        visited(makeKey(stack(i).p, stack(i).th, stack(i).bounces)) = true;
+        visited(makeKey(stack(i).p, stack(i).th, stack(i).segs(:,1))) = true;
     end
 
     iters = 0;
     cObs = cell(1,numel(B));
 
-    while (stackTop > 0) && (iters < options.maxIter)
+    % while (stackTop > 0) && (iters < options.maxIter)
+    while iters < options.maxIter
+
+        % Try another random starting angle if we dead end before min iters
+        if (stackTop <= 0)  && (iters <= options.minIter)
+            stackTop = 1;
+            stack(stackTop) = StackItem(q_init(1:2), rand*2*pi, 0, q_init, RayType.initial, HitType.none, 0);
+            if options.debug
+                disp('Ran out of initial rays and children. Added new random ray')
+            end
+        end
 
         node  = stack(stackTop);
         stackTop = stackTop - 1;
@@ -253,6 +294,7 @@ function qpath = rayCastPlanner(A, q_init, q_goal, B, bounds, options)
                                     options.includeDiffuseReflection, ...
                                     options.numberOfDiffuse, ...
                                     options.includeRandomReflection, ...
+                                    options.robotIsFreeFlying, ...
                                     R_robot, ...
                                     A, ...
                                     B, ...
@@ -312,7 +354,7 @@ function qpath = rayCastPlanner(A, q_init, q_goal, B, bounds, options)
             end
 
             % Add children to stack only if they are not worse than the best path found so far and haven't been visited
-            for k = numel(childRays):-1:2
+            for k = numel(childRays):-1:1
                 segs_i = [segs, [childRays(k).p_emit; childRays(k).th]];
                 g_i = len + norm(childRays(k).p_emit - p);
                 h_i = max(0, norm(childRays(k).p_emit - q_goal(1:2)) - r_cap);
@@ -321,10 +363,14 @@ function qpath = rayCastPlanner(A, q_init, q_goal, B, bounds, options)
                     continue
                 end
 
-                key = makeKey(childRays(k).p_emit, childRays(k).th, bounces+1);
+                key = makeKey(childRays(k).p_emit, childRays(k).th, segs_i(1:2,1));
                 if isKey(visited, key)
+                    if options.debug
+                        fprintf('A ray near (%.2f, %.2f) with angle %.2f has already been tried\n', p(1), p(2), th);
+                    end
                     continue
                 end
+
                 visited(key) = true;
 
                 stackTop = stackTop + 1;
@@ -376,18 +422,16 @@ function qpath = rayCastPlanner(A, q_init, q_goal, B, bounds, options)
                 end
             end
 
-            segs = [segs, [childRays(1).p_emit; childRays(1).th]];
-            len    = len + norm(childRays(1).p_emit - p);
-            p    = childRays(1).p_emit;
-            th   = childRays(1).th;
-            bounces    = bounces + 1;
+            node  = stack(stackTop);
+            stackTop = stackTop - 1;
+            iters = iters + 1;
+    
+            p = node.p;
+            th = wrapToPi(node.th);
+            bounces = node.bounces;
+            segs = node.segs;
+            len = node.len;
 
-            visited(makeKey(p, th, bounces)) = true;
-
-            h = max(0, norm(p - q_goal(1:2)) - r_cap);
-            if (len + h) >= bestLen
-                break
-            end
         end
     end
 
@@ -450,10 +494,11 @@ function childData = genChildren(hit_type, ...
                                  includeDiffuseReflection, ...
                                  numberOfDiffuse, ...
                                  includeRandomReflection, ...
+                                 isFreeFlying, ...
                                  R_robot, ...
                                  A, ...
                                  B, ...
-                                 bounds, ...
+                                 boundsE, ...
                                  maxTurnPerStep, ...
                                  ray_len, ...
                                  childrenPerBounce)
@@ -463,8 +508,8 @@ function childData = genChildren(hit_type, ...
 
     function try_add(angleType, diffuse_offset)
         [p_emit, backSeg, th] = computeSafeEmitBacktrack( ...
-            parent_hit_point, u_ray, th_in, A, B, bounds, ...
-            R_robot, q_goal, angleType, n_hat, ...
+            parent_hit_point, u_ray, th_in, A, B, boundsE, ...
+            isFreeFlying, R_robot, q_goal, angleType, n_hat, ...
             maxTurnPerStep, diffuse_offset, ray_len);
 
         if ~isempty(p_emit) && ~isempty(backSeg) && abs(wrapToPi(th - th_in)) > 1e-3
@@ -528,7 +573,7 @@ function [p_emit, backSeg, th_try] = computeSafeEmitBacktrack(hitPoint, ...
                                                               th_cur, ...
                                                               A, ...
                                                               B, ...
-                                                              bounds, ...
+                                                              boundsE, ...
                                                               R_robot, ...
                                                               q_goal, ...
                                                               angleType, ...
@@ -537,9 +582,9 @@ function [p_emit, backSeg, th_try] = computeSafeEmitBacktrack(hitPoint, ...
                                                               diffuse_offset, ...
                                                               ray_len)
 
-    p_emit = [];
-    backSeg = [];
-    th_try = [];
+    % p_emit = [];
+    % backSeg = [];
+    % th_try = [];
 
     u = u_ray / max(norm(u_ray), eps);
     moveDir = -u;
@@ -556,7 +601,7 @@ function [p_emit, backSeg, th_try] = computeSafeEmitBacktrack(hitPoint, ...
 
     steps = max(1e-3, fracs * ray_len);
 
-    boundsE = edgesFromVertices(bounds);
+    % boundsE = edgesFromVertices(bounds);
 
     if ~isempty(n_hat)
         normal_world_angle = atan2(n_hat(2), n_hat(1));
@@ -619,7 +664,6 @@ function [p_emit, backSeg, th_try] = computeSafeEmitBacktrack(hitPoint, ...
     th_try = [];
 end
 
-% ---- Ray casting against polygons (goal/obstacles/bounds) ----
 function [hitType, hitP, seg, n_hat] = castRay(p0, th, cObstacles, bounds, goalPoly, Lmax)
 
     u = [cos(th); sin(th)];
@@ -628,7 +672,7 @@ function [hitType, hitP, seg, n_hat] = castRay(p0, th, cObstacles, bounds, goalP
     hitP = [];
     n_hat = [];
 
-    % Build a long ray segment using your helpers
+    % Build a long ray to use for the intersection checks
     Cray = fitSegment(p0, p0 + u*Lmax);
 
     % Goal poly

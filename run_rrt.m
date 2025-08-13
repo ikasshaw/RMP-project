@@ -1,6 +1,7 @@
 close all
 clear all
-% addpath("TransformationToolboxFunctions\");
+
+addpath("TransformationToolboxFunctions\");
 addpath("utilities\shared");
 addpath("utilities\rrt");
 

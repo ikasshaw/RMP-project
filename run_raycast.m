@@ -1,31 +1,43 @@
 close all
 clear all
 
+addpath("TransformationToolboxFunctions\");
 addpath("utilities\shared");
 addpath("utilities\rayCast");
 
 
 seeds = [2, 3, 4, 7, 9, 10, 20, 93400];
 
-seed = seeds(end-2);
+% seed = seeds(end-2);
+for i = 1:10
+    for seedid = 1:numel(seeds)
 
-[A, B, q_init, q_goal, bounds] = createEnvironment('seed', seed, 'numObstacles', 5);%, 'regularRobot', false, 'robotOrientation', 0);
-% [A, B, q_init, q_goal, bounds] = createEnvironment('seed', seed, 'numObstacles', 10);%, 'regularRobot', false, 'robotOrientation', 0);
+        seed = seeds(seedid);
+        [A, B, q_init, q_goal, bounds] = createEnvironment('seed', seed, 'numObstacles', i);%, 'regularRobot', false, 'robotOrientation', 0);
+        % [A, B, q_init, q_goal, bounds] = createEnvironment('seed', seed, 'numObstacles', 10);%, 'regularRobot', false, 'robotOrientation', 0);
 
-tic
-% q_path = rayCastPlanner(A, q_goal, q_init, B, bounds, 'debug', false)
-q_path = rayCastPlanner(A, q_init, q_goal, B, bounds, 'debug', false);
-% q_path = rayCastPlanner(A, q_init, q_goal, B, bounds, 'debug', true);
-q_path = rayCastPlanner(A, q_init, q_goal, B, bounds, 'debug', true, 'debugPause', 0, 'debugStep', true);
-% q_path = rayCastPlanner(A, q_init, q_goal, B, bounds, 'debug', true, 'debugPause', .01, 'debugStep', true);
-% q_path = rayCastPlanner(A, q_init, q_goal, B, bounds,'debug', true, 'debugPause', .01, 'debugStep', true, 'debugCObs', false);
-toc
+        tic
+        % q_path = rayCastPlanner(A, q_goal, q_init, B, bounds, 'debug', false)
+        % q_path = rayCastPlanner(A, q_init, q_goal, B, bounds, 'debug', false);
+        % q_path = rayCastPlanner(A, q_init, q_goal, B, bounds, 'debug', true);
+        q_path = rayCastPlanner(A, q_init, q_goal, B, bounds, 'debug', true, 'debugPause', 0, 'debugStep', true);
+        % q_path = rayCastPlanner(A, q_init, q_goal, B, bounds, 'debug', true, 'debugPause', .01, 'debugStep', true);
+        % q_path = rayCastPlanner(A, q_init, q_goal, B, bounds,'debug', true, 'debugPause', .01, 'debugStep', true, 'debugCObs', false);
+        toc
 
-%% Plot the path
-[Fa, ~] = plotRobot(q_init, A, "world", true);
+        %% Plot the path
+        [Fa, ~] = plotRobot(q_init, A, "world", true);
 
+        if size(q_path, 2) >= 2
+            fprintf('Found path for seed %d with %d obstacles\n', i, seed)
+            plotPath(q_path, Fa, A, B)
+        else
+            fprintf('No path for seed %d with %d obstacles\n', i, seed)
+        end
 
-plotPath(q_path, Fa, A, B)
+    end
+
+end
 
 function plotPath(waypoints, robotFrame, robot, obstacles, options)
     arguments
