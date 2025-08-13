@@ -9,8 +9,10 @@ addpath("utilities\rayCast");
 seeds = [2, 3, 4, 7, 9, 10, 20, 93400];
 
 % seed = seeds(end-2);
-for i = 1:10
+for i = 4:10
     for seedid = 1:numel(seeds)
+        close all
+        clearvars -except seeds seedid i
 
         seed = seeds(seedid);
         [A, B, q_init, q_goal, bounds] = createEnvironment('seed', seed, 'numObstacles', i);%, 'regularRobot', false, 'robotOrientation', 0);
@@ -20,8 +22,8 @@ for i = 1:10
         % q_path = rayCastPlanner(A, q_goal, q_init, B, bounds, 'debug', false)
         % q_path = rayCastPlanner(A, q_init, q_goal, B, bounds, 'debug', false);
         % q_path = rayCastPlanner(A, q_init, q_goal, B, bounds, 'debug', true);
-        q_path = rayCastPlanner(A, q_init, q_goal, B, bounds, 'debug', true, 'debugPause', 0, 'debugStep', true);
-        % q_path = rayCastPlanner(A, q_init, q_goal, B, bounds, 'debug', true, 'debugPause', .01, 'debugStep', true);
+        % q_path = rayCastPlanner(A, q_init, q_goal, B, bounds, 'debug', true, 'debugPause', 0, 'debugStep', true);
+        q_path = rayCastPlanner(A, q_init, q_goal, B, bounds, 'debug', true, 'debugPause', .001, 'debugStep', true);
         % q_path = rayCastPlanner(A, q_init, q_goal, B, bounds,'debug', true, 'debugPause', .01, 'debugStep', true, 'debugCObs', false);
         toc
 

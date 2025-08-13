@@ -14,6 +14,7 @@ function [A, B, q_init, q_goal, bounds] = createEnvironment(options)
         options.maxObsSides (1,1) double {mustBeGreaterThan(options.maxObsSides, 2)} = 8;
         options.minObsSides (1,1) double {mustBeGreaterThan(options.minObsSides, 2)} = 5;
         options.numObstacles (1,1) double {mustBePositive, mustBeInteger} = 10;
+        options.boundaryBuffer (1,1) double = 1;
         options.regularObstacles (1,1) = false;
 
         options.maxBoundSides (1,1) double {mustBeGreaterThan(options.maxBoundSides, 2)} = 10;
@@ -97,25 +98,27 @@ function [A, B, q_init, q_goal, bounds] = createEnvironment(options)
     k(end) = [];
 
     bounds = allPoints(:, k);
-    bnds_ps = polyshape(bounds.');
-    [cx, cy] = bnds_ps.centroid;
+    bnds_ps_vertices = polybuffer(polyshape(bounds.'), options.boundaryBuffer, "JointType", "square").Vertices.';
+    k = convhull(bnds_ps_vertices.');
+    k(end) = [];
+    bounds = bnds_ps_vertices(:,k);
+    % [cx, cy] = bnds_ps.centroid;
+    % % inflate the workspace by 10% so boundary doesn't sit on obs or robot
+    % while true
 
-    % inflate the workspace by 10% so boundary doesn't sit on obs or robot
-    while true
+    %     bounds_temp = ((bounds.' - [cx, cy]) * 1.1 + [cx cy]).';
 
-        bounds_temp = ((bounds.' - [cx, cy]) * 1.1 + [cx cy]).';
+    %     k = convhull(bounds_temp.');
+    %     k(end) = [];
+    %     bounds_temp = bounds_temp(:,k);
+    %     psBnds = polyshape(bounds_temp.');
 
-        k = convhull(bounds_temp.');
-        k(end) = [];
-        bounds_temp = bounds_temp(:,k);
-        psBnds = polyshape(bounds_temp.');
-
-        tfIn = isinterior(psBnds, allPoints(1,:), allPoints(2,:));
-        if all(tfIn)
-            bounds = bounds_temp;
-            break
-        end
-    end
+    %     tfIn = isinterior(psBnds, allPoints(1,:), allPoints(2,:));
+    %     if all(tfIn)
+    %         bounds = bounds_temp;
+    %         break
+    %     end
+    % end
 
     % Enforce bound side requirements
     if size(bounds,1) > options.maxBoundSides
