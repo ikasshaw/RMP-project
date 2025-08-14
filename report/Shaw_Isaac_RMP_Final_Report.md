@@ -90,3 +90,94 @@ The tradeoff with the inflated C-obstacles is that valid paths are excluded.
 #### Suggested Improvements
 Calculate the intersection points of the successfull line segments and generate a graph between these connections. This might allow the goals to 
 
+
+
+
+
+# Robot Motion Planning – Final Project
+**Prepared by:** Isaac Shaw
+
+This report summarizes three path-planning methods implemented for the final project:
+
+- Approximate Cell Decomposition (ACD) in 3D configuration space  
+- A basic Ray-Tracing planner  
+- Rapidly-Exploring Random Trees (RRT)
+
+Each method can be executed via its `run_<method>.m` script or by calling the function directly. All include options for experimentation and a debug mode that renders key intermediate geometry. The environment generator was adapted from the course scaffold: `createEnvironment` outputs the robot vertices \(A\), an obstacle set \(B\) as a cell array of polygons, and poses \(q_{\text{init}}\), \(q_{\text{goal}}\). A reproducible RNG seed may be supplied. Although the project spec did not require workspace boundaries, an optional `bounds` polygon is supported; if omitted, a minimal rectangular boundary enclosing \(A\), \(B\), \(q_{\text{init}}\), and \(q_{\text{goal}}\) is auto-computed.
+
+All planners return a path as a \(3\times P\) array \([x;y;\theta]\). The helper `plotPath` visualizes a returned path together with the robot footprint and obstacles.
+
+---
+
+## Method I: Approximate Cell Decomposition — 3D
+
+### Overview
+Configuration space is discretized over \(\theta\) into slices; for each slice, C-obstacles are constructed and cached. The 2D splitting logic from the homework was extended to split along X, Y, **and** the \(\theta\) dimension—each split yields 8 children. A cell is labeled: **full** if all slices intersect obstacles, **empty** if none do, and **mixed** otherwise. When a split occurs with an odd number of \(\theta\) slices, the middle slice is included in all children so adjacency is well-defined across layers. This method follows the configuration-space formulation and subdivision family of approaches in motion planning \[1\], \[11\], \[2\].
+
+An optional boundary check treats any cell whose centroid lies outside the boundary as **mixed** even if it contains no obstacles—this guarantees later path extraction stays within free space. The resulting adjacency graph is searched with A* using Euclidean cost as the heuristic \[3\].
+
+**Figure:** Typical ACD output (slices, cell states, and adjacency preview).
+
+### Observations
+Extending the split and intersection tests to 3D C-space was straightforward, but runtime increases notably versus 2D. With boundary checks enabled, scenarios with three obstacles and \(\theta\in[0,2\pi]\) at 0.2-rad increments reached split depths of ~4 in ~30 s on my MATLAB build; skipping boundary checks improved runtime (18–20 s depending on the layout). The primary engineering challenge was robust **bookkeeping** of adjacencies during repeated subdivision; a dedicated debug overlay was added to visualize and validate the adjacency sets.
+
+---
+
+## Method II: Rapidly-Exploring Random Trees (RRT)
+
+### Overview
+The RRT implementation samples \(q=[x,y,\theta]\) within bounds, extends from the nearest node with a **differential-drive (unicycle) steering law**:
+\[
+\dot{x}=v\cos\theta, \quad \dot{y}=v\sin\theta, \quad \dot{\theta}=\omega,
+\]
+with saturations \(|v|\le v_{\max}\), \(|\omega|\le \omega_{\max}\). Two local-connection modes are exposed: **Dubins** (forward-only) and **Reeds–Shepp** (forward and reverse), standard models for car-like/differential-drive systems \[6\], \[7\], \[2\]. A goal-region polygon in C-space is built (matching the Ray-Tracer method) and, once entered, a short pivot–drive–pivot maneuver is attempted to reach \(q_{\text{goal}}\).
+
+For collision checks along trajectories, the exact robot footprint \(A\) is transformed by \(SE(2)\) and tested against workspace polygons (exact poly–poly checks). Geometric kernels (e.g., `fitSegment`, `intersectSegment`, `firstHitWithPoly`) are used where appropriate. Design choices follow the base RRT formulation and the bidirectional acceleration from RRT-Connect \[4\], \[5\].
+
+### Observations
+- **Strengths.** Quickly finds feasible paths in moderately cluttered scenes, respects nonholonomic constraints by construction, and benefits from goal bias plus the polygonal goal region (which reduces “last-meter” failures).  
+- **Trade-offs.** Like most sampling planners, solution quality can be jagged; light waypoint pruning or short local refinements help. Dubins local steering is faster but less flexible than Reeds–Shepp; the latter improves success rate in tight spaces at a compute cost.  
+- **Correctness of steering.** The steer block is explicitly differential-drive/unicycle dynamics; Dubins/Reeds–Shepp are classical shortest-path families under bounded curvature (and, for RS, reversing), which map well to diff-drive kinematics \[6\], \[7\], \[2\].
+
+### Challenges
+Balancing step size, goal bias, and angular rate limits is important: too-small steps increase collision checks; too-large steps degrade success rate near obstacles. Ensuring consistency between the goal-region polygon test and the final pivot–drive–pivot approach was also key to avoid “hovering” near the goal without terminating.
+
+### Suggested Improvements
+- Add a short **post-processing** pass (e.g., shortcutting or informed local optimization) to smooth and shorten paths.  
+- Use **informed sampling** (e.g., ellipse sampling in \(SE(2)\)) once a first solution is found to improve quality.  
+- Optionally switch to a **bidirectional** variant (RRT-Connect) for faster first-solution times in mazy scenes \[5\].
+
+---
+
+## Method III: Ray-Tracing Planner
+
+### Overview
+This method adapts ideas from computer-graphics ray tracing to explore free space using “rays.” The planner first builds **inflated** C-obstacles to guarantee clearance for a pivot–drive–pivot path. It then constructs a **goal-region** polygon in C-space. Execution proceeds depth-first: emit a set of initial rays, repeatedly cast the current best ray, generate child rays at each bounce (specular, diffuse, goal-directed, random), rank children by a heuristic, and continue until the goal is struck or a depth/iteration cap is reached. The general ray-tracing concept and reflection/refraction treatments are well-covered by Whitted’s seminal paper, Kajiya’s rendering equation, and Glassner’s classic text \[8\]–\[10\].
+
+**Algorithm sketch:**  
+1) Build inflated C-obstacles; 2) compute a safe goal zone; 3) seed initial ray angles; 4) cast ray → first hit; 5) spawn N children; 6) rank and follow the best; 7) stop on goal or depth; 8) backtrack to next candidate.
+
+### Observations
+The inflated C-obstacles made it easy to synthesize feasible pivot–drive–pivot motions and traverse large empty regions quickly when obstacles cluster. Heuristic pruning (discarding rays whose best-case cost exceeds the current incumbent) yielded practical speedups.
+
+### Challenges
+An early prototype recomputed C-obstacles at each emitted-ray orientation. This introduced invalid intermediate rotations and required a costly back-off step; performance degraded markedly in cluttered scenes. Using a fixed inflated C-space avoids that pitfall, though it may **exclude** some valid, tighter paths.
+
+### Suggested Improvements
+Compute intersection points of successful ray segments and build a graph over them; a short search on this sparse visibility-like graph could accelerate convergence and improve final path quality.
+
+---
+
+## References (IEEE style)
+
+[1] T. Lozano-Pérez, “Spatial Planning: A Configuration Space Approach,” *IEEE Transactions on Computers*, vol. C-32, no. 2, pp. 108–120, 1983.  
+[2] S. M. LaValle, *Planning Algorithms*. Cambridge, U.K.: Cambridge University Press, 2006.  
+[3] P. E. Hart, N. J. Nilsson, and B. Raphael, “A Formal Basis for the Heuristic Determination of Minimum Cost Paths,” *IEEE Transactions on Systems Science and Cybernetics*, vol. 4, no. 2, pp. 100–107, 1968.  
+[4] S. M. LaValle and J. J. Kuffner, Jr., “Randomized Kinodynamic Planning,” in *Proceedings of the IEEE International Conference on Robotics and Automation (ICRA)*, 1999, pp. 473–479.  
+[5] J. J. Kuffner, Jr. and S. M. LaValle, “RRT-Connect: An Efficient Approach to Single-Query Path Planning,” in *Proceedings of the IEEE International Conference on Robotics and Automation (ICRA)*, 2000, pp. 995–1001.  
+[6] L. E. Dubins, “On Curves of Minimal Length with a Constraint on Curvature, with Prescribed Initial and Terminal Positions and Tangents,” *American Journal of Mathematics*, vol. 79, no. 3, pp. 497–516, 1957.  
+[7] J. A. Reeds and L. A. Shepp, “Optimal Paths for a Car that Goes Both Forwards and Backwards,” *Pacific Journal of Mathematics*, vol. 145, no. 2, pp. 367–393, 1990.  
+[8] T. Whitted, “An Improved Illumination Model for Shaded Display,” *Communications of the ACM*, vol. 23, no. 6, pp. 343–349, 1980.  
+[9] A. S. Glassner, *An Introduction to Ray Tracing*. San Diego, CA, USA: Morgan Kaufmann, 1989.  
+[10] J. T. Kajiya, “The Rendering Equation,” in *Proceedings of SIGGRAPH*, 1986, pp. 143–150.  
+[11] R. A. Brooks and T. Lozano-Pérez, “A Subdivision Algorithm in Configuration Space for Findpath with Rotations,” in *Proceedings of the International Joint Conference on Artificial Intelligence (IJCAI)*, 1983, pp. 292–298.
