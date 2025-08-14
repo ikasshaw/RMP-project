@@ -10,7 +10,7 @@ seeds = [2, 3, 4, 7, 9, 10, 20, 93400];
 
 seed = seeds(end-2);
 
-[A, B, q_init, q_goal, bounds] = createEnvironment('seed', seed, 'numObstacles', 10);%, 'regularRobot', false, 'robotOrientation', 0);
+[A, B, q_init, q_goal, bounds] = createEnvironment('seed', seed, 'numObstacles', 5);%, 'regularRobot', false, 'robotOrientation', 0);
 
 tic
 q_path = rrtDiffDrive(A, q_init, q_goal, B, bounds, 'considerBounds', true, 'debug', true);

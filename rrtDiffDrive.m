@@ -83,7 +83,7 @@ function qpath = rrtDiffDrive(A, q_init, q_goal, B, bounds, options)
     for i = 1:numel(B)
         allV = [];
         for t = 1:numel(thetas)
-            allV = [allV, cObstacle(thetas(t), A, B{i})]; %#ok<AGROW>
+            allV = [allV, cObstacle(thetas(t), A, B{i})];
         end
         allV = rmmissing(allV, 2);
         if ~isempty(allV)
@@ -99,7 +99,7 @@ function qpath = rrtDiffDrive(A, q_init, q_goal, B, bounds, options)
         end
     end
 
-    % --- Goal region polygon (exactly like rayCast flow) ---
+    % Calculate  known safe region (in c-space) that if you enter, you know you can pivot-drive-pivot safely
     Lmax = max(1, 3*(max(bounds(1,:)) - min(bounds(1,:))) + ...
                   3*(max(bounds(2,:)) - min(bounds(2,:))));
     % If goal inside any C-obstacle, fail fast
@@ -135,11 +135,6 @@ function qpath = rrtDiffDrive(A, q_init, q_goal, B, bounds, options)
             plotObstacle(B{i}, i);
         end
 
-        for i = 1:numel(cObs)
-            p = plotCObstacle(cObs{i}, i);
-            set(p, 'FaceColor', 'y')
-        end
-
         plot(q_init(1), q_init(2), 'dg', 'MarkerSize',10, 'LineWidth',2);
         plot(q_goal(1), q_goal(2), 'dr', 'MarkerSize',10, 'LineWidth',2);
 
@@ -151,16 +146,19 @@ function qpath = rrtDiffDrive(A, q_init, q_goal, B, bounds, options)
     end
 
 
-    % --- Main loop ---
     for iter = 1:options.maxIter
         % Sample (with goal bias)
         if rand < options.goalBias
             q_rand = q_goal;
         else
+
             while true
                 x = x_lims(1) + rand * diff(x_lims);
                 y = y_lims(1) + rand * diff(y_lims);
-                if ~options.considerBounds || inpolygon(x,y,bounds(1,:),bounds(2,:)), break; end
+
+                if ~options.considerBounds || inpolygon(x,y,bounds(1,:),bounds(2,:))
+                    break;
+                end
             end
             q_rand = [x; y; 2*pi*rand];
         end
@@ -169,9 +167,7 @@ function qpath = rrtDiffDrive(A, q_init, q_goal, B, bounds, options)
         [~, nearId] = min(arrayfun(@(n) configDist(n.q, q_rand, options.wTheta), nodes));
         q_near = nodes(nearId).q;
 
-        % --- Steer using differential-drive kinematics (unicycle model) ---
-        % ẋ = v cosθ, ẏ = v sinθ, θ̇ = ω with |v|≤vMax, |ω|≤ωMax.
-        % Reeds–Shepp allows v<0 (reverse), Dubins forces v≥0 with in-place pivots when needed.
+        % Reeds–Shepp forward and reverse while Dubins only foward
         [q_new, traj, isFree] = steer(q_near, q_rand, options.stepSize, ...
                                       options.vMax, options.omegaMax, ...
                                       A, obstacles_union, options.numCollisionSteps, ...
@@ -179,13 +175,16 @@ function qpath = rrtDiffDrive(A, q_init, q_goal, B, bounds, options)
                                       options.steeringMode);
         if ~isFree || isempty(q_new), continue; end
 
-        % Add node
         newId = numel(nodes) + 1;
+
         nodes(newId) = struct('q', q_new, 'parent', nearId, 'trajToParent', traj, 'children', []);
         nodes(nearId).children(end+1) = newId;
-        if options.debug, plot(traj(1,:), traj(2,:), 'b-', 'LineWidth', 1); drawnow; end
 
-        % --- Goal region check (polygon, like rayCast) ---
+        if options.debug, plot(traj(1,:), traj(2,:), 'b-', 'LineWidth', 1);
+            drawnow;
+        end
+
+        % Goal region check
         if ~isempty(goalPoly) && inpolygon(q_new(1), q_new(2), goalPoly(1,:), goalPoly(2,:))
             [traj_final, ok] = finalApproach(q_new, q_goal, A, obstacles_union, bounds, ...
                                              options.considerBounds, options.goalAngleSteps, options.goalLineSteps);
@@ -197,7 +196,7 @@ function qpath = rrtDiffDrive(A, q_init, q_goal, B, bounds, options)
             end
         end
 
-        % --- Fallback: if very close in config metric, try a direct steer to goal ---
+        % Fallback if very close, try a direct steer to goal
         if configDist(q_new, q_goal, options.wTheta) < options.stepSize
             [q_new_goal, traj_goal, okGoal] = steer(q_new, q_goal, options.stepSize, ...
                                                     options.vMax, options.omegaMax, ...
@@ -207,23 +206,40 @@ function qpath = rrtDiffDrive(A, q_init, q_goal, B, bounds, options)
             if okGoal && ~isempty(q_new_goal)
                 goalId = numel(nodes) + 1;
                 nodes(goalId) = struct('q', q_goal, 'parent', newId, 'trajToParent', traj_goal, 'children', []);
-                if options.debug, plot(traj_goal(1,:), traj_goal(2,:), 'r-', 'LineWidth', 2); drawnow; end
-                foundPath = true; break;
+
+                if options.debug, plot(traj_goal(1,:), traj_goal(2,:), 'r-', 'LineWidth', 2);
+                    drawnow;
+                 end
+                 
+                foundPath = true;
+                break;
             end
         end
     end
 
     % --- Extract path ---
-    if ~foundPath, qpath = []; return; end
-    idxs = goalId; cur = nodes(goalId).parent;
-    while cur ~= 0, idxs(end+1) = cur; cur = nodes(cur).parent; end %#ok<AGROW>
+    if ~foundPath
+        qpath = [];
+        return
+    end
+
+    idxs = goalId;
+    cur = nodes(goalId).parent;
+
+    while cur ~= 0
+        idxs(end+1) = cur;
+        cur = nodes(cur).parent;
+    end
+
     idxs = fliplr(idxs);
     qpath = nodes(idxs(1)).q;
+
     for k = 2:numel(idxs)
         seg = nodes(idxs(k)).trajToParent;
         if isempty(seg), seg = nodes(idxs(k)).q; end
-        qpath = [qpath, seg(:,2:end)]; %#ok<AGROW>
+        qpath = [qpath, seg(:,2:end)];
     end
+
     qpath(:,1)   = q_init;
     qpath(:,end) = q_goal;
 end

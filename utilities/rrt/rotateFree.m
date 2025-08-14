@@ -1,7 +1,7 @@
-function ok = rotateFree(q_from, theta_target, A, obstacles_union, bounds, considerBounds, nSteps)
+function ok = rotateFreeish(q_from, theta_target, A, obstacles_union, bounds, considerBounds, nSteps)
 
-    delta = wrapToPi(theta_target, q_from);
-    thetas = q_from + linespace(0, delta, nSteps);
+    delta = wrapToPi(theta_target - q_from(3))
+    thetas = q_from + linspace(0, delta, nSteps);
 
     ok = true;
     for i=1:numel(thetas)
