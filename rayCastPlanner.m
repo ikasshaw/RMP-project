@@ -146,7 +146,7 @@ function qpath = rayCastPlanner(A, q_init, q_goal, B, bounds, options)
 
     % Compute a safe goal region to aim for
     % If this region is intersected by a ray, we know that we can safely reach the goal with a pivot drive pivot maneuver
-    goalPoly = radialClearance(q_goal(1:2), cObs, bounds, options.goalRegionNRays, Lmax);
+    goalPoly = getGoalRegion(q_goal(1:2), cObs, bounds, options.goalRegionNRays, Lmax);
 
     % Debug plotting
     if options.debug

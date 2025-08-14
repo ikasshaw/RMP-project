@@ -1,4 +1,4 @@
-function goalRegion = radialClearance(p, cObstacles, bounds, nRays, Lmax)
+function goalRegion = getGoalRegion(p, cObstacles, bounds, nRays, Lmax)
 
     % Use of this function in rayCast assumes the cObstacles are the cObstacles projected on the plane across all robot configurations
     % Also assumes the bounds represent the minimum bounds for the robot again in C-space
