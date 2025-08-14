@@ -2,7 +2,6 @@
 % Robot Motion Planning
 % 8/10/2025
 
-
 % THIS FUNCTION ASSUMES THE BOUNDARIES ARE THE MINIMUM BOUNDARIES FOR ALL ANGLES OF THE ROBOT
 function qpath = rayCastPlanner(A, q_init, q_goal, B, bounds, options)
 
@@ -31,7 +30,7 @@ function qpath = rayCastPlanner(A, q_init, q_goal, B, bounds, options)
         options.includeRandomReflection logical = false
         options.numberOfDiffuse (1,1) double {mustBeInteger,mustBePositive} = 5
 
-        options.turnPerStep (1,1) double = .1
+        options.turnPerStep (1,1) double = .2
         options.maxDistPerStep (1,1) double = .1
         options.scoreChildren logical = false
         
@@ -64,6 +63,7 @@ function qpath = rayCastPlanner(A, q_init, q_goal, B, bounds, options)
     
     rng(options.rngSeed);
     qpath = [];
+    ZERO = 1e-8;
 
     childrenPerBounce = sum([options.includeGoalReflection, options.includeSpecularReflection, options.includeDiffuseReflection, options.includeRandomReflection, options.includeDiffuseReflection * options.numberOfDiffuse]);
 
@@ -71,11 +71,11 @@ function qpath = rayCastPlanner(A, q_init, q_goal, B, bounds, options)
     [cx, cy] = centroid(polyshape(A.', 'Simplify', true));
     R_robot = max(sqrt((A(1,:) - cx).^2 + (A(2,:) - cy).^2));
 
-    margin = R_robot - R_robot * cos(options.turnPerStep/2);
     
     % Calculate worst case cObs over all angles (unless free flying then only calculate cObs for the initial config angle
     cObs = {};
     thetas = linspace(0, 2*pi, max(1, ceil(1/options.turnPerStep)));
+    margin = R_robot - R_robot * cos(options.turnPerStep/2);
     for i = 1:numel(B)
 
         all_obs_cspace_verts = [];
@@ -85,12 +85,23 @@ function qpath = rayCastPlanner(A, q_init, q_goal, B, bounds, options)
             all_obs_cspace_verts = [all_obs_cspace_verts, cObstacle(theta, A, B{i})];
         end
 
+        % keep convex hull
+        if size(all_obs_cspace_verts,2) >= 3
+            
+            % remove NaN ring separators and duplicate points
+            all_obs_cspace_verts = rmmissing(all_obs_cspace_verts, 2);
+            all_obs_cspace_verts = uniquetol(all_obs_cspace_verts.', 1e-3, 'ByRows', true).';
+            k = convhull(all_obs_cspace_verts(1,:).', all_obs_cspace_verts(2,:).');
+            k(end) = [];
+            all_obs_cspace_verts(:,k);
+        end
+
         % Inflate by margin (arc cover), then clean vertices
-        all_obs_cspace_verts = polybuffer(polyshape(all_obs_cspace_verts.', 'Simplify', true), margin).Vertices.';  % <-- add semicolon
+        all_obs_cspace_verts = polybuffer(polyshape(all_obs_cspace_verts.', 'Simplify', true), margin*2).Vertices.';
 
         % remove NaN ring separators and duplicate points
-        all_obs_cspace_verts = all_obs_cspace_verts(:, all(isfinite(all_obs_cspace_verts),1));
-        all_obs_cspace_verts = uniquetol(all_obs_cspace_verts.', 1e-9, 'ByRows', true).';
+        all_obs_cspace_verts = rmmissing(all_obs_cspace_verts, 2);
+        all_obs_cspace_verts = uniquetol(all_obs_cspace_verts.', 1e-4, 'ByRows', true).';
 
         % keep convex hull ring (no repeated last vertex)
         if size(all_obs_cspace_verts,2) >= 3
@@ -130,31 +141,12 @@ function qpath = rayCastPlanner(A, q_init, q_goal, B, bounds, options)
         if inpolygon(q_init(1), q_init(2), cObs{k}(1,:), cObs{k}(2,:))
             disp('Algorithm sees initial position inside cObstacle and cannot solve.')
             return
-            % [obs_cx, obs_cy] = centroid(polyshape(cObs{k}.'));
-            % v = q_init(1:2) - [obs_cx; obs_cy];
-            % angle_to_centroid = atan2(v(2), v(1));
-            % [hitType, hitP, seg, n_hat] = castRay(q_init(1:2), angle_to_centroid, cObs, bounds, [], q_goal, Lmax);
-
-            % plot(hitP(1), hitP(2), 'ro', 'MarkerSize',6, 'LineWidth',1.5, 'Tag', 'HitPoint');
-            
-            % pause
         end
     end
 
     % Compute a safe goal region to aim for
     % If this region is intersected by a ray, we know that we can safely reach the goal with a pivot drive pivot maneuver
-    d_ray = radialClearance(q_goal(1:2), cObs, bounds, options.goalRegionNRays, Lmax);
-    r_cap = max(0, d_ray - (R_robot + options.goalRegionMargin));
-
-    if r_cap > 0
-        Kgoal = 32;
-        thg = linspace(0, 2*pi, Kgoal+1);
-        thg(end) = [];
-        goalPoly = [q_goal(1) + r_cap*cos(thg);
-                    q_goal(2) + r_cap*sin(thg)];
-    else
-        goalPoly = [];
-    end
+    goalPoly = radialClearance(q_goal(1:2), cObs, bounds, options.goalRegionNRays, Lmax);
 
     % Debug plotting
     if options.debug
@@ -221,9 +213,7 @@ function qpath = rayCastPlanner(A, q_init, q_goal, B, bounds, options)
     % Should stop casting from getting stuck in corner reflectionish cycles
     positionResolution = 0.02;
     angleResolution = deg2rad(1);
-    % visited = containers.Map('KeyType','char','ValueType','logical');
     visited = dictionary();
-
     makeKey = @(p,th,initP) keyHash([round(p(1)/positionResolution),...
                                      round(p(2)/positionResolution),...
                                      round(wrapToPi(th)/angleResolution),...
@@ -236,7 +226,15 @@ function qpath = rayCastPlanner(A, q_init, q_goal, B, bounds, options)
 
     iter = 0;
 
-    % while (stackTop > 0) && (iters < options.maxIter)
+    if ~isempty(goalPoly) && inpolygon(q_init(1), q_init(2), goalPoly(1,:), goalPoly(2,:))
+        disp('Trivial solution directly between q_init and q_goal found')
+
+        heading = wrapToPi(atan2(q_goal(2) - q_init(2),  q_goal(1) - q_init(1)));
+        successPaths{1} = [q_init, [q_goal(1:2); heading], q_goal];
+        iter = options.maxIter;
+        nSuccess = 1;
+    end
+
     while iter < options.maxIter
 
         % Try another random starting angle if we dead end before min iters
@@ -264,7 +262,7 @@ function qpath = rayCastPlanner(A, q_init, q_goal, B, bounds, options)
         len = node.len;
 
         % Branch-and-bound lower bound
-        h = max(0, norm(p - q_goal(1:2)) - r_cap);
+        h = max(0, norm(p - q_goal(1:2)));
         if (len + h) >= bestLen
             continue
         end
@@ -280,20 +278,13 @@ function qpath = rayCastPlanner(A, q_init, q_goal, B, bounds, options)
 
             % C-obstacles for this theta
 
-            % if options.debug && options.debugCObs
-            %     delete(findall(gca, 'Tag', "CObsLabel"));
-            %     delete(findall(gca, 'Tag', "CObs"));
-            %     debugPlotCspaceAtTheta(cObs);
-            %     drawnow limitrate;
-            % end
-
             [hitType, hitPoint, segRay, hitNormal] = castRay(p, th, cObs, bounds, goalPoly, q_goal, Lmax);
 
             if isempty(hitPoint)
                 continue
             elseif hitType ~= HitType.goal
                 % Nudge the ray back just a bit to avoid going inside obstacles
-                hitPoint = hitPoint - max(1e-9, 1e-4*norm(segRay(:,2)-segRay(:,1))) * [cos(th); sin(th)];
+                hitPoint = hitPoint - max(ZERO, ZERO*1e4*norm(segRay(:,2)-segRay(:,1))) * [cos(th); sin(th)];
             end
 
             ray_len = [];
@@ -302,6 +293,7 @@ function qpath = rayCastPlanner(A, q_init, q_goal, B, bounds, options)
             end
 
             if hitType == HitType.goal
+                
                 segs = [segs, [hitPoint(1); hitPoint(2); th], q_goal];
 
                 len + ray_len + norm(segs(1:2,end) - hitPoint);
@@ -386,7 +378,7 @@ function qpath = rayCastPlanner(A, q_init, q_goal, B, bounds, options)
             for k = numel(childRays):-1:1
                 segs_i = [segs, [childRays(k).p_emit; childRays(k).th]];
                 g_i = len + norm(childRays(k).p_emit - p);
-                h_i = max(0, norm(childRays(k).p_emit - q_goal(1:2)) - r_cap);
+                h_i = max(0, norm(childRays(k).p_emit - q_goal(1:2)));
 
                 if (g_i + h_i) >= bestLen
                     continue
@@ -394,9 +386,6 @@ function qpath = rayCastPlanner(A, q_init, q_goal, B, bounds, options)
 
                 key = makeKey(childRays(k).p_emit, childRays(k).th, segs_i(1:2,1));
                 if isKey(visited, key)
-                    % if options.debug
-                    %     fprintf('A ray near (%.2f, %.2f) with angle %.2f has already been tried\n', p(1), p(2), th);
-                    % end
                     continue
                 end
 
@@ -495,46 +484,53 @@ function qpath = rayCastPlanner(A, q_init, q_goal, B, bounds, options)
         end
     end
 
+    % Waypoints have the XY of the current waypoint and the heading to the next waypoint
+    % so shift angles to previous waypoint and add heading from final waypoint to q_goal 
     waypoints = successPaths{minIdx};
-    qpath = waypoints(:, 1);
 
     d = sqrt(sum(diff(waypoints,1,2).^2,1));
 
-    for idx = 1:size(waypoints,2)-1
-
+    qpath = [q_init];
+    numTurnSteps = 40;
+    % Waypoints (other than 1 (q_init) and end (q_goal) have the XY of the 
+    % current waypoint and the heading to the next waypoint
+    for idx = 1:size(waypoints,2) - 1
+        
+        % First turn to face next waypoint
         currentWaypoint = waypoints(:,idx);
+        nextWaypoint = waypoints(:,idx+1);
+            
+        heading = wrapToPi(atan2( nextWaypoint(2) - currentWaypoint(2),  nextWaypoint(1) - currentWaypoint(1)))
+            
+        if abs(wrapToPi(currentWaypoint(3)) - heading) > ZERO * 100
+            angleSteps = linspace(wrapToPi(currentWaypoint(3)), heading, numTurnSteps);
+            angleSteps2 = linspace(wrapTo2Pi(currentWaypoint(3)), wrapTo2Pi(heading), numTurnSteps);
+            if abs(angleSteps(2) - angleSteps(1)) > abs(angleSteps2(2) - angleSteps2(1))
+                angleSteps = angleSteps2;
+            end
 
-        nextWaypoint    = waypoints(:,idx+1);
-        direction = nextWaypoint - currentWaypoint;
-        heading = atan2(direction(2), direction(1));
-
-        numTurnSteps = max(ceil(abs(nextWaypoint(3) - currentWaypoint(3))/options.turnPerStep), 5);
-        angleSteps   = linspace(currentWaypoint(3), heading, numTurnSteps);
-        pivot        = repmat(currentWaypoint(1:2), 1, numel(angleSteps));
-        % pivot        = repmat([currentWaypoint(1:2); nextWaypoint(3)], 1, numel(angleSteps));
-        pivot(3,:)   = angleSteps;
-
-        qpath        = [qpath, pivot];
-
-        if idx ~= size(waypoints, 2)
-            numTravelSteps = max(ceil(d(idx)/options.maxDistPerStep), 5);
-            drive = [linspace(currentWaypoint(1), nextWaypoint(1), numTravelSteps);
-                     linspace(currentWaypoint(2), nextWaypoint(2), numTravelSteps)];
+            pivot = repmat(currentWaypoint, 1, numel(angleSteps));
+            pivot(3,:) = angleSteps;
+            qpath = [qpath, pivot];
+        end
+            
+        if any(abs(currentWaypoint(1:2) - nextWaypoint(1:2)) > ZERO*100)
+            numTravelSteps = ceil(d(idx)/options.maxDistPerStep);
+            drive = [linspace(currentWaypoint(1), nextWaypoint(1), numTravelSteps); linspace(currentWaypoint(2), nextWaypoint(2), numTravelSteps)];
             drive(3,:) = heading;
-            % drive(3,:) = nextWaypoint(3);
-            % drive(3,:) = currentWaypoint(3);
             qpath = [qpath, drive];
+
+        end
+
+        if abs(wrapToPi(nextWaypoint(3)) - wrapToPi(currentWaypoint(3))) > ZERO
+            angleSteps = linspace(wrapToPi(currentWaypoint(3)), wrapToPi(nextWaypoint(3)), numTurnSteps);
+            angleSteps2 = linspace(wrapTo2Pi(currentWaypoint(3)), wrapTo2Pi(nextWaypoint(3)), numTurnSteps);
+            if abs(angleSteps(2) - angleSteps(1)) > abs(angleSteps2(2) - angleSteps2(1))
+                angleSteps = angleSteps2;
+            end
+            pivot = repmat(nextWaypoint, 1, numel(angleSteps));
+            pivot(3,:) = angleSteps;
+            qpath = [qpath, pivot];
         end
     end
-
-    currentHeading = qpath(3,end);
-    final_heading = q_goal(3);
-
-    numTurnSteps = max(ceil(abs(final_heading - currentHeading)/options.turnPerStep), 5)
-    angleSteps   = linspace(currentWaypoint(3), heading, numTurnSteps);
-    pivot        = repmat(qpath(1:2, end), 1, numel(angleSteps));
-    pivot(3,:)   = angleSteps;
-
-    qpath = [qpath, pivot];
-
 end

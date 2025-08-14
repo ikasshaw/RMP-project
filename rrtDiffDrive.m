@@ -11,13 +11,16 @@ function qpath = rrtDiffDrive(A, q_init, q_goal, B, bounds, options)
         q_goal (3,1) double
         B cell
         bounds (2, :) double = [0; 0] % Default bounds if not specified
+
         options.debug logical = false
         options.maxIter (1,1) double = 5000
         options.stepSize (1,1) double = 0.5
-        options.goalBias (1,1) double = 0.05
+        options.goalBias (1,1) double = 0.1
+
         options.omegaMax (1,1) double = pi/2
         options.vMax (1,1) double = 1
         options.wTheta (1,1) double = 0.5
+
         options.numCollisionSteps (1,1) double = 20
         options.maxTurnPerStep (1,1) double = .1
         options.deltaT (1,1) double = 0.1
@@ -100,13 +103,15 @@ function qpath = rrtDiffDrive(A, q_init, q_goal, B, bounds, options)
         drawnow;
     end
 
-    foundPath = false; goalId = NaN;
+    foundPath = false;
+    goalId = NaN;
 
     for iter = 1:options.maxIter
         % Sample
         if rand < options.goalBias
             q_rand = q_goal;
         else
+            % Sampling step
             while true
                 x = x_lims(1) + rand * diff(x_lims);
                 y = y_lims(1) + rand * diff(y_lims);
@@ -142,16 +147,6 @@ function qpath = rrtDiffDrive(A, q_init, q_goal, B, bounds, options)
         if options.debug
             plot(traj(1,:), traj(2,:), 'b-', 'LineWidth', 1); drawnow ;
         end
-
-        %         % --- Build goal polygon (replaces goal circle) ---
-        % if r_cap > 0
-        %     Kgoal = 32; % number of sides for the goal polygon
-        %     thg = linspace(0, 2*pi, Kgoal+1); thg(end) = [];
-        %     goalPoly = [q_goal(1) + r_cap*cos(thg);
-        %                 q_goal(2) + r_cap*sin(thg)];  % 2xKgoal
-        % else
-        %     goalPoly = [];
-        % end
 
         % Entered capture region? Do final approach.
         if r_cap > 0 && norm(q_new(1:2) - q_goal(1:2)) <= r_cap
@@ -207,15 +202,9 @@ function qpath = rrtDiffDrive(A, q_init, q_goal, B, bounds, options)
         qpath = [qpath, seg(:,2:end)]; %#ok<AGROW>
     end
 
-    % % Micro-snap to exact q_goal (collision-checked)
-    % q_last = qpath(:,end);
-    % [seg_snap, ok_snap] = microSnap(q_last, q_goal, A, obstacles_union, bounds, options.considerBounds, ...
-    %                                 max(12, options.goalAngleSteps), max(25, options.goalLineSteps));
-    % if ok_snap
-    %     qpath = [qpath, seg_snap(:,2:end)]; %#ok<AGROW>
-    % end
     qpath(:,1)   = q_init;
     qpath(:,end) = q_goal;
+
 end
 
 % Distance & geometry helpers
@@ -267,6 +256,7 @@ end
 function [q_new, traj, isFree] = steer(q_from, q_to, stepSize, vMax, omegaMax, ...
                                        A, obstacles_union, numSteps, ~, ...
                                        bounds, considerBounds, steeringMode)
+
     % Choose controls per steering mode (local Reeds–Shepp vs. Dubins)
     dx = q_to(1)-q_from(1); dy = q_to(2)-q_from(2);
     d = hypot(dx,dy);
@@ -309,7 +299,7 @@ function [q_new, traj, isFree] = steer(q_from, q_to, stepSize, vMax, omegaMax, .
         end
     end
 
-    % Propagate closed-form (same as before)
+    % Propagate closed-form
     if abs(v) < 1e-6 && abs(omega) > 1e-6
         q_new = [q_from(1:2); q_from(3)+omega*t];
     elseif abs(omega) < 1e-6
@@ -344,6 +334,7 @@ function [q_new, traj, isFree] = steer(q_from, q_to, stepSize, vMax, omegaMax, .
     end
 end
 
+
 % === Final approach & micro-snap (with shortest-angle rotations) ===
 function [traj, ok] = finalApproach(q_from, q_goal, A, obstacles_union, bounds, considerBounds, nAng, nLine)
     traj = []; ok = false;
@@ -361,18 +352,6 @@ function [traj, ok] = finalApproach(q_from, q_goal, A, obstacles_union, bounds, 
     ok = true;
 end
 
-% function [seg, ok] = microSnap(q_last, q_goal, A, obstacles_union, bounds, considerBounds, nAng, nLine)
-%     seg = q_last; ok = false;
-%     alpha = atan2(q_goal(2)-q_last(2), q_goal(1)-q_last(1));
-%     if ~rotateFree(q_last, alpha, A, obstacles_union, bounds, considerBounds, nAng), return; end
-%     s1 = sampleRotation(q_last, alpha, nAng);
-%     if ~straightFree([q_last(1); q_last(2); alpha], q_goal(1:2), A, obstacles_union, bounds, considerBounds, nLine), return; end
-%     s2 = sampleStraight([q_last(1); q_last(2); alpha], q_goal(1:2), nLine);
-%     if ~rotateFree([q_goal(1); q_goal(2); alpha], q_goal(3), A, obstacles_union, bounds, considerBounds, nAng), return; end
-%     s3 = sampleRotation([q_goal(1); q_goal(2); alpha], q_goal(3), nAng);
-%     seg = [s1, s2(:,2:end), s3(:,2:end)];
-%     ok = true;
-% end
 
 % --- Shortest-angle rotation helpers ---
 function thetas = shortestSweep(theta0, theta1, nSteps)
@@ -380,6 +359,8 @@ function thetas = shortestSweep(theta0, theta1, nSteps)
     thetas = theta0 + linspace(0, delta, nSteps);
 end
 
+
+% Check for collisions over a discrete range of angles
 function ok = rotateFree(q_from, theta_target, A, obstacles_union, bounds, considerBounds, nSteps)
     thetas = shortestSweep(q_from(3), theta_target, nSteps);
     ok = true;
@@ -407,13 +388,14 @@ function ok = straightFree(q_from_aligned, xy_goal, A, obstacles_union, bounds, 
     end
 end
 
+
 function seg = sampleStraight(q_from_aligned, xy_goal, nSteps)
     xs = linspace(q_from_aligned(1), xy_goal(1), nSteps);
     ys = linspace(q_from_aligned(2), xy_goal(2), nSteps);
     seg = [xs; ys; repmat(q_from_aligned(3),1,nSteps)];
 end
 
-% === Collision check ===
+% Check that a given configuration has no collisions
 function free = isConfigFree(q, A, obstacles_union, bounds, considerBounds)
     R = [cos(q(3)), -sin(q(3)); sin(q(3)), cos(q(3))];
     A_trans = R*A + q(1:2);
@@ -428,8 +410,4 @@ function free = isConfigFree(q, A, obstacles_union, bounds, considerBounds)
         free = false; return;
     end
     free = true;
-end
-
-function ang = wrapToPi(ang)
-    ang = mod(ang + pi, 2*pi) - pi;
 end
